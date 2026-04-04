@@ -4,8 +4,7 @@ from .models import Product, CPUSpec, GPUSpec, MotherboardSpec, Category,RAMSpec
 import ollama
 
 
-def get_best_gpu_under_budget(budget: int):
-
+def get_best_gpu_under_budget(budget: int, brand=None, model=None):
     db: Session = SessionLocal()
 
     query = (
@@ -13,13 +12,19 @@ def get_best_gpu_under_budget(budget: int):
         .join(GPUSpec, Product.id == GPUSpec.product_id)
         .filter(Product.price <= budget)
         .filter(Product.is_active == True)
-        .order_by(Product.price.desc())
     )
 
-    results = query.all()
+    if brand:
+        query = query.filter(Product.name.ilike(f"%{brand}%"))
+
+    if model:
+        query = query.filter(Product.name.ilike(f"%{model}%"))
+
+    query = query.order_by(Product.price.desc())
+
+    results = query.limit(3).all()
 
     gpus = []
-
     for product, gpu in results:
         gpus.append({
             "id": product.id,
@@ -29,26 +34,30 @@ def get_best_gpu_under_budget(budget: int):
             "chipset": gpu.gpu_chipset,
             "tdp": gpu.tdp,
             "length_mm": gpu.length_mm
-
         })
 
     db.close()
-
     return gpus
 
-def get_best_cpu_under_budget(budget):
-
+def get_best_cpu_under_budget(budget, brand=None, model=None):
     db = SessionLocal()
 
-    result = (
+    query = (
         db.query(Product, CPUSpec)
         .join(CPUSpec, Product.id == CPUSpec.product_id)
         .filter(Product.price <= budget)
         .filter(Product.is_active == True)
-        .order_by(Product.price.desc())
-        .first()
     )
 
+    if brand:
+        query = query.filter(Product.name.ilike(f"%{brand}%"))
+
+    if model:
+        query = query.filter(Product.name.ilike(f"%{model}%"))
+
+    query = query.order_by(Product.price.desc())
+
+    result = query.first()
     db.close()
 
     if not result:
@@ -66,20 +75,53 @@ def get_best_cpu_under_budget(budget):
     }
 
 
+def build_pc_with_requirements(data: dict):
+    budget = data.get("budget")
+    cpu_brand = data.get("cpu_brand")
+    cpu_model = data.get("cpu_model")
+    gpu_brand = data.get("gpu_brand")
+    gpu_model = data.get("gpu_model")
+    ram_size = data.get("ram")
+
+    return build_pc(
+        budget,
+        cpu_brand=cpu_brand,
+        cpu_model=cpu_model,
+        gpu_brand=gpu_brand,
+        gpu_model=gpu_model,
+        ram_size=ram_size
+    )
 
 
 
-def build_pc(budget):
 
+def build_pc(
+    budget,
+    cpu_brand=None,
+    cpu_model=None,
+    gpu_brand=None,
+    gpu_model=None,
+    ram_size=None
+):
     gpu_budget = int(budget * 0.6)
     cpu_budget = int(budget * 0.25)
     motherboard_budget = int(budget * 0.2)
     ram_budget = int(budget * 0.1)
 
-    gpu_list = get_best_gpu_under_budget(gpu_budget)
+    # ---------------- GPU (with filters) ----------------
+    gpu_list = get_best_gpu_under_budget(
+        gpu_budget,
+        brand=gpu_brand,
+        model=gpu_model
+    )
     gpu = gpu_list[0] if gpu_list else None
 
-    cpu = get_best_cpu_under_budget(cpu_budget)
+    # ---------------- CPU (with filters) ----------------
+    cpu = get_best_cpu_under_budget(
+        cpu_budget,
+        brand=cpu_brand,
+        model=cpu_model
+    )
 
     motherboard = None
     ram = None
@@ -90,39 +132,51 @@ def build_pc(budget):
     cooler = None
     case_fans = get_case_fans_for_build()
 
+    # ---------------- Motherboard ----------------
     if cpu:
         motherboard = get_motherboard_for_cpu(
             cpu["socket"],
             motherboard_budget
         )
 
+    # ---------------- RAM (with size constraint) ----------------
     if motherboard:
         ram = get_ram_for_motherboard(
             motherboard["ram_type"],
             ram_budget
         )
-    if cpu and gpu:
 
+        # If user specified RAM size (like 32GB)
+        if ram_size and ram:
+            if ram["capacity_gb"] < ram_size:
+                ram = get_ram_by_size(
+                    motherboard["ram_type"],
+                    ram_size
+                )
+
+    # ---------------- PSU ----------------
+    if cpu and gpu:
         psu_watt = calculate_psu(
             cpu["tdp"],
             gpu["tdp"]
         )
-
         psu = get_psu_for_build(psu_watt)
 
+    # ---------------- Case ----------------
     if motherboard and gpu:
-
         case = get_case_for_build(
             motherboard["form_factor"],
-            gpu["length_mm"]
+            gpu["length_mm"],budget
         )
-    if case and cpu:
 
+    # ---------------- Cooler ----------------
+    if case and cpu:
         cooler = get_cooler_for_build(
             cpu["socket"],
             case["max_cpu_cooler_height_mm"]
         )
 
+    # ---------------- Final Build ----------------
     build = {
         "budget": budget,
         "gpu": gpu,
@@ -136,6 +190,7 @@ def build_pc(budget):
         "cooler": cooler,
         "case_fans": case_fans
     }
+
     explanation = generate_build_explanation(build)
 
     return {
@@ -315,7 +370,9 @@ def get_storage_for_build(budget):
     }
 
 
-def get_case_for_build(form_factor, gpu_length):
+def get_case_for_build(form_factor, gpu_length, budget=0):
+
+    case_budget = int(budget * 0.1) 
 
     db = SessionLocal()
 
@@ -324,6 +381,8 @@ def get_case_for_build(form_factor, gpu_length):
         .join(CaseSpec, Product.id == CaseSpec.product_id)
         .join(Category, Product.category_id == Category.id)
         .filter(Category.name == "Case")
+        .filter(Product.price <= case_budget)
+        .order_by(Product.price.desc())
         .all()
     )
 
@@ -426,7 +485,7 @@ Give a short explanation (4-5 sentences).
 
     client = ollama.Client(host="http://host.docker.internal:11434")
     response = client.chat(
-        model="llama3",
+        model="mistral:7b-instruct-q4_0",
         messages=[{"role": "user", "content": prompt}]
     )
 
