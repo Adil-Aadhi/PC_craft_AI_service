@@ -22,3 +22,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
 
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    
+    # ADD THIS — catches missing SECRET_KEY env variable
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Auth error: {str(e)}")

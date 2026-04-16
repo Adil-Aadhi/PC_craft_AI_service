@@ -1,6 +1,10 @@
-import ollama
+from google import genai
 import json
 import re
+import os
+import time
+
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def extract_requirements(text: str):
 
@@ -34,24 +38,21 @@ Output:
 Return ONLY the JSON object. Nothing else.
 """
 
-    client = ollama.Client(host="http://host.docker.internal:11434")
-    response = client.chat(
-        model="mistral:7b-instruct-q4_0",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    raw = response["message"]["content"].strip()
-
-    # Strip markdown code fences if Mistral wraps in ```json ... ```
-    raw = re.sub(r"^```(?:json)?", "", raw).strip()
-    raw = re.sub(r"```$", "", raw).strip()
-
-    # Extract first JSON object found (handles extra text)
-    match = re.search(r'\{.*\}', raw, re.DOTALL)
-    if match:
-        raw = match.group(0)
-
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"budget": None}
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.1-flash-lite-preview",
+                contents=prompt
+            )
+            raw = response.text.strip()
+            raw = re.sub(r"^```(?:json)?", "", raw).strip()
+            raw = re.sub(r"```$", "", raw).strip()
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                raw = match.group(0)
+            return json.loads(raw)
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                time.sleep(30)
+                continue
+            return {"budget": None}
