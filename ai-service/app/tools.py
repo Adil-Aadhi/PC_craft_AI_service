@@ -30,7 +30,8 @@ def get_best_gpu_under_budget(budget: int, brand=None, model=None):
             "memory": gpu.memory_gb,
             "chipset": gpu.gpu_chipset,
             "tdp": gpu.tdp,
-            "length_mm": gpu.length_mm
+            "length_mm": gpu.length_mm,
+            "recommended_psu_watt": gpu.recommended_psu_watt
         })
     db.close()
     return gpus
@@ -163,8 +164,8 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
             ram = get_ram_by_size(motherboard["ram_type"], ram_size)
 
     if cpu and gpu:
-        psu_watt = calculate_psu(cpu["tdp"], gpu["tdp"])
-        psu = get_psu_for_build(psu_watt, psu_budget)  # <-- pass budget
+        psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
+        psu = get_psu_for_build(psu_watt, psu_budget) # <-- pass budget
 
     storage = get_storage_for_build(budget, storage_budget)  # <-- pass budget
     case = None
@@ -273,9 +274,9 @@ def get_ram_by_size(ram_type, required_gb):
     }
 
 def calculate_psu(cpu_tdp, gpu_tdp):
-    base_power = cpu_tdp + gpu_tdp
-    overhead = 120
-    recommended = base_power + overhead
+    cpu_tdp = cpu_tdp or 65     # default if None in DB
+    gpu_tdp = gpu_tdp or 150    # default if None in DB
+    recommended = cpu_tdp + gpu_tdp + 120
     if recommended <= 450:
         return 450
     elif recommended <= 550:
