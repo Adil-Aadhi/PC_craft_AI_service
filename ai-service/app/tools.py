@@ -78,11 +78,72 @@ def build_pc_with_requirements(data: dict):
         ram_size=ram_size
     )
 
+# def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
+#     gpu_budget = int(budget * 0.6)
+#     cpu_budget = int(budget * 0.25)
+#     motherboard_budget = int(budget * 0.2)
+#     ram_budget = int(budget * 0.1)
+
+#     gpu_list = get_best_gpu_under_budget(gpu_budget, brand=gpu_brand, model=gpu_model)
+#     gpu = gpu_list[0] if gpu_list else None
+#     cpu = get_best_cpu_under_budget(cpu_budget, brand=cpu_brand, model=cpu_model)
+
+#     motherboard = None
+#     ram = None
+#     psu_watt = None
+#     psu = None
+#     storage = get_storage_for_build(budget)
+#     case = None
+#     cooler = None
+#     case_fans = get_case_fans_for_build()
+
+#     if cpu:
+#         motherboard = get_motherboard_for_cpu(cpu["socket"], motherboard_budget)
+
+#     if motherboard:
+#         ram = get_ram_for_motherboard(motherboard["ram_type"], ram_budget)
+#         if ram_size and ram:
+#             if ram["capacity_gb"] < ram_size:
+#                 ram = get_ram_by_size(motherboard["ram_type"], ram_size)
+
+#     if cpu and gpu:
+#         psu_watt = calculate_psu(cpu["tdp"], gpu["tdp"])
+#         psu = get_psu_for_build(psu_watt)
+
+#     if motherboard and gpu:
+#         case = get_case_for_build(motherboard["form_factor"], gpu["length_mm"], budget)
+
+#     if case and cpu:
+#         cooler = get_cooler_for_build(cpu["socket"], case["max_cpu_cooler_height_mm"])
+
+#     build = {
+#         "budget": budget,
+#         "gpu": gpu,
+#         "cpu": cpu,
+#         "motherboard": motherboard,
+#         "ram": ram,
+#         "psu": psu,
+#         "recommended_psu_watt": psu_watt,
+#         "storage": storage,
+#         "case": case,
+#         "cooler": cooler,
+#         "case_fans": case_fans
+#     }
+
+#     explanation = generate_build_explanation(build)
+#     return {"build": build, "ai_explanation": explanation}
+
 def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
-    gpu_budget = int(budget * 0.6)
-    cpu_budget = int(budget * 0.25)
-    motherboard_budget = int(budget * 0.2)
-    ram_budget = int(budget * 0.1)
+    # Percentages that sum to 100%
+    gpu_budget        = int(budget * 0.38)
+    cpu_budget        = int(budget * 0.20)
+    motherboard_budget= int(budget * 0.13)
+    ram_budget        = int(budget * 0.07)
+    psu_budget        = int(budget * 0.08)
+    storage_budget    = int(budget * 0.07)
+    case_budget       = int(budget * 0.05)
+    cooler_budget     = int(budget * 0.02)
+    # case_fans come from whatever is left
 
     gpu_list = get_best_gpu_under_budget(gpu_budget, brand=gpu_brand, model=gpu_model)
     gpu = gpu_list[0] if gpu_list else None
@@ -90,31 +151,32 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
 
     motherboard = None
     ram = None
-    psu_watt = None
     psu = None
-    storage = get_storage_for_build(budget)
-    case = None
-    cooler = None
-    case_fans = get_case_fans_for_build()
+    psu_watt = None
 
     if cpu:
         motherboard = get_motherboard_for_cpu(cpu["socket"], motherboard_budget)
 
     if motherboard:
         ram = get_ram_for_motherboard(motherboard["ram_type"], ram_budget)
-        if ram_size and ram:
-            if ram["capacity_gb"] < ram_size:
-                ram = get_ram_by_size(motherboard["ram_type"], ram_size)
+        if ram_size and ram and ram["capacity_gb"] < ram_size:
+            ram = get_ram_by_size(motherboard["ram_type"], ram_size)
 
     if cpu and gpu:
         psu_watt = calculate_psu(cpu["tdp"], gpu["tdp"])
-        psu = get_psu_for_build(psu_watt)
+        psu = get_psu_for_build(psu_watt, psu_budget)  # <-- pass budget
+
+    storage = get_storage_for_build(budget, storage_budget)  # <-- pass budget
+    case = None
+    cooler = None
 
     if motherboard and gpu:
-        case = get_case_for_build(motherboard["form_factor"], gpu["length_mm"], budget)
+        case = get_case_for_build(motherboard["form_factor"], gpu["length_mm"], case_budget)
 
     if case and cpu:
-        cooler = get_cooler_for_build(cpu["socket"], case["max_cpu_cooler_height_mm"])
+        cooler = get_cooler_for_build(cpu["socket"], case["max_cpu_cooler_height_mm"], cooler_budget)
+
+    case_fans = get_case_fans_for_build()
 
     build = {
         "budget": budget,
@@ -129,7 +191,6 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
         "cooler": cooler,
         "case_fans": case_fans
     }
-
     explanation = generate_build_explanation(build)
     return {"build": build, "ai_explanation": explanation}
 
@@ -184,6 +245,33 @@ def get_ram_for_motherboard(ram_type, budget):
         "ram_type": ram.ram_type
     }
 
+def get_ram_by_size(ram_type, required_gb):
+    """Cheapest RAM that meets the user-requested capacity."""
+    db = SessionLocal()
+    result = (
+        db.query(Product, RAMSpec)
+        .join(RAMSpec, Product.id == RAMSpec.product_id)
+        .join(Category, Product.category_id == Category.id)
+        .filter(Category.name == "RAM")
+        .filter(RAMSpec.ram_type == ram_type)
+        .filter(RAMSpec.capacity_gb >= required_gb)
+        .filter(Product.is_active == True)
+        .order_by(Product.price.asc())  # cheapest that satisfies
+        .first()
+    )
+    db.close()
+    if not result:
+        return None
+    product, ram = result
+    return {
+        "id": product.id,
+        "name": product.name,
+        "price": float(product.price),
+        "capacity_gb": ram.capacity_gb,
+        "frequency_mhz": ram.frequency_mhz,
+        "ram_type": ram.ram_type
+    }
+
 def calculate_psu(cpu_tdp, gpu_tdp):
     base_power = cpu_tdp + gpu_tdp
     overhead = 120
@@ -199,17 +287,55 @@ def calculate_psu(cpu_tdp, gpu_tdp):
     else:
         return 850
 
-def get_psu_for_build(required_watt):
+# def get_psu_for_build(required_watt):
+#     db = SessionLocal()
+#     result = (
+#         db.query(Product, PSUSpec)
+#         .join(PSUSpec, Product.id == PSUSpec.product_id)
+#         .join(Category, Product.category_id == Category.id)
+#         .filter(Category.name == "PSU")
+#         .filter(PSUSpec.wattage >= required_watt)
+#         .order_by(PSUSpec.wattage.asc())
+#         .first()
+#     )
+#     db.close()
+#     if not result:
+#         return None
+#     product, psu = result
+#     return {
+#         "id": product.id,
+#         "name": product.name,
+#         "price": float(product.price),
+#         "wattage": psu.wattage,
+#         "efficiency": psu.efficiency_rating
+#     }
+
+def get_psu_for_build(required_watt, budget=None):
     db = SessionLocal()
-    result = (
+    query = (
         db.query(Product, PSUSpec)
         .join(PSUSpec, Product.id == PSUSpec.product_id)
         .join(Category, Product.category_id == Category.id)
         .filter(Category.name == "PSU")
         .filter(PSUSpec.wattage >= required_watt)
-        .order_by(PSUSpec.wattage.asc())
-        .first()
     )
+    if budget:
+        query = query.filter(Product.price <= budget)
+    result = query.order_by(PSUSpec.wattage.asc()).first()
+
+    # fallback: ignore budget, still get correct wattage
+    if not result:
+        result = (
+            db.query(Product, PSUSpec)
+            .join(PSUSpec, Product.id == PSUSpec.product_id)
+            .join(Category, Product.category_id == Category.id)
+            .filter(Category.name == "PSU")
+            .filter(PSUSpec.wattage >= required_watt)
+            .filter(Product.is_active == True)
+            .order_by(Product.price.asc())
+            .first()
+        )
+
     db.close()
     if not result:
         return None
@@ -222,32 +348,79 @@ def get_psu_for_build(required_watt):
         "efficiency": psu.efficiency_rating
     }
 
-def get_storage_for_build(budget):
+# def get_storage_for_build(budget):
+#     db = SessionLocal()
+#     if budget < 60000:
+#         capacity = 500
+#     elif budget < 120000:
+#         capacity = 1000
+#     else:
+#         capacity = 2000
+#     result = (
+#         db.query(Product, StorageSpec)
+#         .join(StorageSpec, Product.id == StorageSpec.product_id)
+#         .join(Category, Product.category_id == Category.id)
+#         .filter(Category.name == "Storage")
+#         .filter(StorageSpec.capacity_gb >= capacity)
+#         .order_by(StorageSpec.capacity_gb.asc())
+#         .first()
+#     )
+#     if result is None:
+#         result = (
+#             db.query(Product, StorageSpec)
+#             .join(StorageSpec, Product.id == StorageSpec.product_id)
+#             .join(Category, Product.category_id == Category.id)
+#             .filter(Category.name == "Storage")
+#             .order_by(StorageSpec.capacity_gb.desc())
+#             .first()
+#         )
+#     db.close()
+#     if result is None:
+#         return None
+#     product, storage = result
+#     return {
+#         "id": product.id,
+#         "name": product.name,
+#         "price": float(product.price),
+#         "capacity_gb": storage.capacity_gb,
+#         "type": storage.storage_type,
+#         "interface": storage.interface,
+#         "read_speed": storage.read_speed
+#     }
+
+def get_storage_for_build(total_budget, storage_budget=None):
     db = SessionLocal()
-    if budget < 60000:
+    if total_budget < 60000:
         capacity = 500
-    elif budget < 120000:
+    elif total_budget < 120000:
         capacity = 1000
     else:
         capacity = 2000
-    result = (
+    
+    query = (
         db.query(Product, StorageSpec)
         .join(StorageSpec, Product.id == StorageSpec.product_id)
         .join(Category, Product.category_id == Category.id)
         .filter(Category.name == "Storage")
         .filter(StorageSpec.capacity_gb >= capacity)
-        .order_by(StorageSpec.capacity_gb.asc())
-        .first()
     )
+    if storage_budget:
+        query = query.filter(Product.price <= storage_budget)
+    
+    result = query.order_by(StorageSpec.capacity_gb.asc()).first()
+
+    # fallback: ignore capacity filter, just get cheapest within budget
     if result is None:
-        result = (
+        query2 = (
             db.query(Product, StorageSpec)
             .join(StorageSpec, Product.id == StorageSpec.product_id)
             .join(Category, Product.category_id == Category.id)
             .filter(Category.name == "Storage")
-            .order_by(StorageSpec.capacity_gb.desc())
-            .first()
         )
+        if storage_budget:
+            query2 = query2.filter(Product.price <= storage_budget)
+        result = query2.order_by(Product.price.asc()).first()
+
     db.close()
     if result is None:
         return None
@@ -262,8 +435,8 @@ def get_storage_for_build(budget):
         "read_speed": storage.read_speed
     }
 
-def get_case_for_build(form_factor, gpu_length, budget=0):
-    case_budget = int(budget * 0.1)
+def get_case_for_build(form_factor, gpu_length, case_budget=0):
+    # case_budget = int(budget * 0.1)
     db = SessionLocal()
     results = (
         db.query(Product, CaseSpec)
@@ -274,6 +447,17 @@ def get_case_for_build(form_factor, gpu_length, budget=0):
         .order_by(Product.price.desc())
         .all()
     )
+    # fallback: ignore budget, find cheapest compatible case
+    if not results:
+        results = (
+            db.query(Product, CaseSpec)
+            .join(CaseSpec, Product.id == CaseSpec.product_id)
+            .join(Category, Product.category_id == Category.id)
+            .filter(Category.name == "Case")
+            .order_by(Product.price.asc())
+            .all()
+        )
+
     db.close()
     for product, case in results:
         supported = [f.strip() for f in case.supported_form_factors.split(",")]
@@ -288,16 +472,53 @@ def get_case_for_build(form_factor, gpu_length, budget=0):
             }
     return None
 
-def get_cooler_for_build(cpu_socket, case_max_height):
+# def get_cooler_for_build(cpu_socket, case_max_height, budget=None):
+#     db = SessionLocal()
+#     results = (
+#         db.query(Product, CoolerSpec)
+#         .join(CoolerSpec, Product.id == CoolerSpec.product_id)
+#         .join(Category, Product.category_id == Category.id)
+#         .filter(Category.name == "Cooler")
+#         .all()
+#     )
+#     db.close()
+#     for product, cooler in results:
+#         supported = [s.strip() for s in cooler.supported_sockets.split(",")]
+#         if cpu_socket in supported and cooler.cooler_height_mm <= case_max_height:
+#             return {
+#                 "id": product.id,
+#                 "name": product.name,
+#                 "price": float(product.price),
+#                 "cooler_type": cooler.cooler_type,
+#                 "height_mm": cooler.cooler_height_mm
+#             }
+#     return None
+
+def get_cooler_for_build(cpu_socket, case_max_height, budget=None):
     db = SessionLocal()
-    results = (
+    query = (
         db.query(Product, CoolerSpec)
         .join(CoolerSpec, Product.id == CoolerSpec.product_id)
         .join(Category, Product.category_id == Category.id)
         .filter(Category.name == "Cooler")
-        .all()
     )
+    if budget:
+        query = query.filter(Product.price <= budget)  # ← apply before .all()
+    
+    results = query.all()  # ← then call .all()
+
+    # fallback: ignore budget, find cheapest compatible cooler
+    if not results:
+        results = (
+            db.query(Product, CoolerSpec)
+            .join(CoolerSpec, Product.id == CoolerSpec.product_id)
+            .join(Category, Product.category_id == Category.id)
+            .filter(Category.name == "Cooler")
+            .order_by(Product.price.asc())
+            .all()
+        )
     db.close()
+    
     for product, cooler in results:
         supported = [s.strip() for s in cooler.supported_sockets.split(",")]
         if cpu_socket in supported and cooler.cooler_height_mm <= case_max_height:
@@ -317,7 +538,8 @@ def get_case_fans_for_build():
         .join(CaseFanSpec, Product.id == CaseFanSpec.product_id)
         .join(Category, Product.category_id == Category.id)
         .filter(Category.name == "Case Fan")
-        .order_by(CaseFanSpec.rpm.desc())
+        .filter(Product.is_active == True) 
+        .order_by(Product.price.asc())
         .first()
     )
     db.close()
