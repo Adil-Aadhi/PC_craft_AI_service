@@ -63,6 +63,56 @@ def get_best_cpu_under_budget(budget, brand=None, model=None):
         "tdp": cpu.tdp
     }
 
+def get_compatible_cpu_and_motherboard(cpu_budget, motherboard_budget, cpu_brand=None, cpu_model=None):
+    db = SessionLocal()
+
+    # Get all sockets that have at least one active motherboard
+    available_sockets = [
+        row[0] for row in
+        db.query(MotherboardSpec.socket)
+        .join(Product, MotherboardSpec.product_id == Product.id)
+        .filter(Product.is_active == True)
+        .distinct()
+        .all()
+    ]  # will be ['AM4', 'AM5', 'LGA1700']
+
+    query = (
+        db.query(Product, CPUSpec)
+        .join(CPUSpec, Product.id == CPUSpec.product_id)
+        .filter(Product.is_active == True)
+        .filter(CPUSpec.socket.in_(available_sockets))  # only CPUs with motherboards
+    )
+    if cpu_brand:
+        query = query.filter(Product.name.ilike(f"%{cpu_brand}%"))
+    if cpu_model:
+        query = query.filter(Product.name.ilike(f"%{cpu_model}%"))
+
+    # Try within budget first
+    result = query.filter(Product.price <= cpu_budget).order_by(Product.price.desc()).first()
+
+    # Fallback: cheapest CPU with compatible socket ignoring budget
+    if not result:
+        result = query.order_by(Product.price.asc()).first()
+
+    db.close()
+    if not result:
+        return None, None
+
+    product, cpu = result
+    cpu_data = {
+        "id": product.id,
+        "name": product.name,
+        "price": float(product.price),
+        "cores": cpu.cores,
+        "socket": cpu.socket,
+        "tdp": cpu.tdp
+    }
+
+    # Get compatible motherboard for this CPU socket
+    motherboard_data = get_motherboard_for_cpu(cpu_data["socket"], motherboard_budget)
+
+    return cpu_data, motherboard_data
+
 def build_pc_with_requirements(data: dict):
     budget = data.get("budget")
     cpu_brand = data.get("cpu_brand")
@@ -150,9 +200,95 @@ RECOMMENDED_MIN_BUDGET = 70000
 #     explanation = generate_build_explanation(build)
 #     return {"build": build, "ai_explanation": explanation}
 
-def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
+# def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
     
-    # Hard minimum - can't build at all
+#     # Hard minimum - can't build at all
+#     if budget < MINIMUM_BUILD_BUDGET:
+#         return {
+#             "build": None,
+#             "warning": None,
+#             "ai_explanation": f"Sorry, we can't build a complete PC under ₹{MINIMUM_BUILD_BUDGET:,}. Our minimum compatible build starts at ₹{MINIMUM_BUILD_BUDGET:,}. Please increase your budget."
+#         }
+
+#     # Percentages that sum to 100%
+#     gpu_budget         = int(budget * 0.38)
+#     cpu_budget         = int(budget * 0.20)
+#     motherboard_budget = int(budget * 0.13)
+#     ram_budget         = int(budget * 0.07)
+#     psu_budget         = int(budget * 0.08)
+#     storage_budget     = int(budget * 0.07)
+#     case_budget        = int(budget * 0.05)
+#     cooler_budget      = int(budget * 0.02)
+
+#     gpu_list = get_best_gpu_under_budget(gpu_budget, brand=gpu_brand, model=gpu_model)
+#     gpu = gpu_list[0] if gpu_list else None
+#     cpu = get_best_cpu_under_budget(cpu_budget, brand=cpu_brand, model=cpu_model)
+
+#     if not gpu or not cpu:
+#         return {
+#             "build": None,
+#             "warning": None,
+#             "ai_explanation": f"Sorry, we couldn't find compatible GPU and CPU within ₹{budget:,}. Please increase your budget."
+#         }
+
+#     motherboard = None
+#     ram = None
+#     psu = None
+#     psu_watt = None
+
+#     if cpu:
+#         motherboard = get_motherboard_for_cpu(cpu["socket"], motherboard_budget)
+
+#     if motherboard:
+#         ram = get_ram_for_motherboard(motherboard["ram_type"], ram_budget)
+#         if ram_size and ram and ram["capacity_gb"] < ram_size:
+#             ram = get_ram_by_size(motherboard["ram_type"], ram_size)
+
+#     if cpu and gpu:
+#         psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
+#         psu = get_psu_for_build(psu_watt, psu_budget)
+
+#     storage = get_storage_for_build(budget, storage_budget)
+#     case = None
+#     cooler = None
+
+#     if motherboard and gpu:
+#         case = get_case_for_build(motherboard["form_factor"], gpu["length_mm"], case_budget)
+
+#     if case and cpu:
+#         cooler = get_cooler_for_build(cpu["socket"], case["max_cpu_cooler_height_mm"], cooler_budget)
+
+#     case_fans = get_case_fans_for_build()
+
+#     build = {
+#         "budget": budget,
+#         "gpu": gpu,
+#         "cpu": cpu,
+#         "motherboard": motherboard,
+#         "ram": ram,
+#         "psu": psu,
+#         "recommended_psu_watt": psu_watt,
+#         "storage": storage,
+#         "case": case,
+#         "cooler": cooler,
+#         "case_fans": case_fans
+#     }
+
+#     explanation = generate_build_explanation(build)
+
+#     # Warning for low budget — show build but warn user
+#     warning = None
+#     if budget < RECOMMENDED_MIN_BUDGET:
+#         warning = f"⚠️ This is our minimum budget build. For better performance and more component choices, we recommend a budget of at least ₹{RECOMMENDED_MIN_BUDGET:,}."
+
+#     return {
+#         "build": build,
+#         "warning": warning,
+#         "ai_explanation": explanation
+#     }
+
+def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
+
     if budget < MINIMUM_BUILD_BUDGET:
         return {
             "build": None,
@@ -160,7 +296,6 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
             "ai_explanation": f"Sorry, we can't build a complete PC under ₹{MINIMUM_BUILD_BUDGET:,}. Our minimum compatible build starts at ₹{MINIMUM_BUILD_BUDGET:,}. Please increase your budget."
         }
 
-    # Percentages that sum to 100%
     gpu_budget         = int(budget * 0.38)
     cpu_budget         = int(budget * 0.20)
     motherboard_budget = int(budget * 0.13)
@@ -172,31 +307,31 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
 
     gpu_list = get_best_gpu_under_budget(gpu_budget, brand=gpu_brand, model=gpu_model)
     gpu = gpu_list[0] if gpu_list else None
-    cpu = get_best_cpu_under_budget(cpu_budget, brand=cpu_brand, model=cpu_model)
+
+    # ← CHANGED: use compatible function instead of get_best_cpu_under_budget
+    cpu, motherboard = get_compatible_cpu_and_motherboard(
+        cpu_budget, motherboard_budget,
+        cpu_brand=cpu_brand, cpu_model=cpu_model
+    )
 
     if not gpu or not cpu:
         return {
             "build": None,
             "warning": None,
-            "ai_explanation": f"Sorry, we couldn't find compatible GPU and CPU within ₹{budget:,}. Please increase your budget."
+            "ai_explanation": f"Sorry, we couldn't find compatible components within ₹{budget:,}. Please increase your budget."
         }
 
-    motherboard = None
     ram = None
     psu = None
     psu_watt = None
-
-    if cpu:
-        motherboard = get_motherboard_for_cpu(cpu["socket"], motherboard_budget)
 
     if motherboard:
         ram = get_ram_for_motherboard(motherboard["ram_type"], ram_budget)
         if ram_size and ram and ram["capacity_gb"] < ram_size:
             ram = get_ram_by_size(motherboard["ram_type"], ram_size)
 
-    if cpu and gpu:
-        psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
-        psu = get_psu_for_build(psu_watt, psu_budget)
+    psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
+    psu = get_psu_for_build(psu_watt, psu_budget)
 
     storage = get_storage_for_build(budget, storage_budget)
     case = None
@@ -226,7 +361,6 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
 
     explanation = generate_build_explanation(build)
 
-    # Warning for low budget — show build but warn user
     warning = None
     if budget < RECOMMENDED_MIN_BUDGET:
         warning = f"⚠️ This is our minimum budget build. For better performance and more component choices, we recommend a budget of at least ₹{RECOMMENDED_MIN_BUDGET:,}."
@@ -246,6 +380,7 @@ def get_motherboard_for_cpu(cpu_socket, budget):
         .filter(Category.name == "Motherboard")
         .filter(MotherboardSpec.socket == cpu_socket)
         .filter(Product.price <= budget)
+        .filter(Product.is_active == True)
         .order_by(Product.price.desc())
         .first()
     )
