@@ -106,37 +106,7 @@ def extract_requirements_regex(question: str) -> dict:
         "purpose": purpose
     }
 
-# def run_langchain_agent(question: str):
-#     q = question.lower()
 
-#     try:
-#         if "best gpu" in q:
-#             data = extract_requirements_regex(question)
-#             gpus = get_best_gpu_under_budget(data.get("budget") or 0)
-#             return {"type": "gpu", "results": gpus}
-
-#         if "best cpu" in q:
-#             data = extract_requirements_regex(question)
-#             cpu = get_best_cpu_under_budget(data.get("budget") or 0)
-#             return {"type": "cpu", "results": cpu}
-
-#         if any(word in q for word in [
-#             "pc", "build", "gaming", "editing", "ai", "workstation", "computer"
-#         ]):
-#             data = extract_requirements_regex(question)
-#             if not data.get("budget"):
-#                 return {
-#                     "type": "error",
-#                     "answer": "Please mention a budget, e.g. 'under 1.5 lakh' or '80000'."
-#                 }
-#             result = build_pc_with_requirements(data)
-#             return {"type": "smart_build", "result": result}
-
-#         response = chat_with_gemini(question)
-#         return {"type": "chat", "answer": response}
-
-#     except Exception as e:
-#         return {"error": str(e)}
 
 def run_langchain_agent(question: str):
     q = question.lower()
@@ -156,9 +126,24 @@ def run_langchain_agent(question: str):
                 cpu = get_best_cpu_under_budget(data.get("budget"))
                 return {"type": "cpu", "results": cpu}
 
+            # if any(word in q for word in ["pc", "build", "gaming", "editing", "ai", "workstation", "computer"]):
+            #     result = build_pc_with_requirements(data)
+            #     return {"type": "smart_build", "result": result}
             if any(word in q for word in ["pc", "build", "gaming", "editing", "ai", "workstation", "computer"]):
                 result = build_pc_with_requirements(data)
-                return {"type": "smart_build", "result": result}
+
+                # Hard fail - can't build at all
+                if result.get("build") is None:
+                    return {
+                        "type": "error",
+                        "answer": result.get("ai_explanation")
+                    }
+
+                # Success - with or without warning
+                return {
+                    "type": "smart_build",
+                    "result": result  # contains build + warning + ai_explanation
+                }
 
         # 3. If it's a general question or NO budget was found, use Gemini Chat
         # This will catch "Is Ryzen or Intel best?"

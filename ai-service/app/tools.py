@@ -79,6 +79,9 @@ def build_pc_with_requirements(data: dict):
         ram_size=ram_size
     )
 
+MINIMUM_BUILD_BUDGET = 55000
+RECOMMENDED_MIN_BUDGET = 70000
+
 
 # def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
 #     # Percentages that sum to 100%
@@ -149,25 +152,33 @@ def build_pc_with_requirements(data: dict):
 
 def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=None, ram_size=None):
     
-    remaining = budget
+    # Hard minimum - can't build at all
+    if budget < MINIMUM_BUILD_BUDGET:
+        return {
+            "build": None,
+            "warning": None,
+            "ai_explanation": f"Sorry, we can't build a complete PC under ₹{MINIMUM_BUILD_BUDGET:,}. Our minimum compatible build starts at ₹{MINIMUM_BUILD_BUDGET:,}. Please increase your budget."
+        }
 
-    # GPU gets 38% — biggest allocation
-    gpu_budget = int(remaining * 0.38)
+    # Percentages that sum to 100%
+    gpu_budget         = int(budget * 0.38)
+    cpu_budget         = int(budget * 0.20)
+    motherboard_budget = int(budget * 0.13)
+    ram_budget         = int(budget * 0.07)
+    psu_budget         = int(budget * 0.08)
+    storage_budget     = int(budget * 0.07)
+    case_budget        = int(budget * 0.05)
+    cooler_budget      = int(budget * 0.02)
+
     gpu_list = get_best_gpu_under_budget(gpu_budget, brand=gpu_brand, model=gpu_model)
     gpu = gpu_list[0] if gpu_list else None
-    if gpu:
-        remaining -= gpu["price"]
-
-    # CPU gets 20%
-    cpu_budget = int(budget * 0.20)
     cpu = get_best_cpu_under_budget(cpu_budget, brand=cpu_brand, model=cpu_model)
-    if cpu:
-        remaining -= cpu["price"]
 
     if not gpu or not cpu:
         return {
             "build": None,
-            "ai_explanation": f"Sorry, we couldn't find compatible components within ₹{budget:,}. Please increase your budget."
+            "warning": None,
+            "ai_explanation": f"Sorry, we couldn't find compatible GPU and CPU within ₹{budget:,}. Please increase your budget."
         }
 
     motherboard = None
@@ -175,69 +186,32 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
     psu = None
     psu_watt = None
 
-    # Motherboard: 13% of original budget, but cap at remaining
-    motherboard_budget = min(int(budget * 0.13), int(remaining * 0.40))
     if cpu:
         motherboard = get_motherboard_for_cpu(cpu["socket"], motherboard_budget)
-        if motherboard:
-            remaining -= motherboard["price"]
 
-    # RAM: 7% of original, cap at remaining
-    ram_budget = min(int(budget * 0.07), int(remaining * 0.30))
     if motherboard:
         ram = get_ram_for_motherboard(motherboard["ram_type"], ram_budget)
-        if ram:
-            remaining -= ram["price"]
         if ram_size and ram and ram["capacity_gb"] < ram_size:
             ram = get_ram_by_size(motherboard["ram_type"], ram_size)
 
-    # PSU: use GPU's recommended wattage from DB
-    psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
-    psu_budget = min(int(budget * 0.08), int(remaining * 0.40))
-    psu = get_psu_for_build(psu_watt, psu_budget)
-    if psu:
-        remaining -= psu["price"]
+    if cpu and gpu:
+        psu_watt = gpu.get("recommended_psu_watt") or calculate_psu(cpu["tdp"], gpu["tdp"])
+        psu = get_psu_for_build(psu_watt, psu_budget)
 
-    # Storage: 7% of original, cap at remaining
-    storage_budget = min(int(budget * 0.07), int(remaining * 0.50))
     storage = get_storage_for_build(budget, storage_budget)
-    if storage:
-        remaining -= storage["price"]
-
-    # Case: 5% of original, cap at remaining
     case = None
-    case_budget = min(int(budget * 0.05), int(remaining * 0.60))
+    cooler = None
+
     if motherboard and gpu:
         case = get_case_for_build(motherboard["form_factor"], gpu["length_mm"], case_budget)
-        if case:
-            remaining -= case["price"]
 
-    # Cooler: whatever is left (2%), cap at remaining
-    cooler = None
-    cooler_budget = min(int(budget * 0.02), remaining)
     if case and cpu:
         cooler = get_cooler_for_build(cpu["socket"], case["max_cpu_cooler_height_mm"], cooler_budget)
-        if cooler:
-            remaining -= cooler["price"]
 
     case_fans = get_case_fans_for_build()
 
-    # Calculate actual total spent
-    total_spent = sum([
-        gpu["price"] if gpu else 0,
-        cpu["price"] if cpu else 0,
-        motherboard["price"] if motherboard else 0,
-        ram["price"] if ram else 0,
-        psu["price"] if psu else 0,
-        storage["price"] if storage else 0,
-        case["price"] if case else 0,
-        cooler["price"] if cooler else 0,
-        case_fans["price"] if case_fans else 0,
-    ])
-
     build = {
         "budget": budget,
-        "total_spent": round(total_spent, 2),   # ← actual total for frontend
         "gpu": gpu,
         "cpu": cpu,
         "motherboard": motherboard,
@@ -249,8 +223,19 @@ def build_pc(budget, cpu_brand=None, cpu_model=None, gpu_brand=None, gpu_model=N
         "cooler": cooler,
         "case_fans": case_fans
     }
+
     explanation = generate_build_explanation(build)
-    return {"build": build, "ai_explanation": explanation}
+
+    # Warning for low budget — show build but warn user
+    warning = None
+    if budget < RECOMMENDED_MIN_BUDGET:
+        warning = f"⚠️ This is our minimum budget build. For better performance and more component choices, we recommend a budget of at least ₹{RECOMMENDED_MIN_BUDGET:,}."
+
+    return {
+        "build": build,
+        "warning": warning,
+        "ai_explanation": explanation
+    }
 
 def get_motherboard_for_cpu(cpu_socket, budget):
     db = SessionLocal()
